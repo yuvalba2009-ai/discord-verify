@@ -6,7 +6,7 @@ import asyncio
 import os
 
 # ============================================================
-#  All secrets loaded from environment variables — safe for public GitHub
+#  All secrets loaded from environment variables — safe for public GitHubb
 # ============================================================
 TOKEN           = os.environ['DISCORD_TOKEN']
 GUILD_ID        = int(os.environ['GUILD_ID'])
