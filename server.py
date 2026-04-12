@@ -14,6 +14,8 @@ REDIRECT_URI    = os.environ['REDIRECT_URI']
 REQUIRED_BIO    = os.environ.get('REQUIRED_BIO', 'discord.gg/justjoin')
 REQUIRED_TAG    = os.environ.get('REQUIRED_TAG', 'BACK')
 INTERNAL_SECRET = os.environ['INTERNAL_SECRET']
+BOT_TOKEN       = os.environ['DISCORD_TOKEN']
+GUILD_ID        = os.environ['GUILD_ID']
 BOT_API_URL     = 'http://localhost:8081/internal/assign-role'
 # ============================================================
 
@@ -53,16 +55,22 @@ def callback():
         return render_result(False, 'Failed to get access token from Discord.')
 
     access_token = token_resp.json()['access_token']
-    headers = {'Authorization': f'Bearer {access_token}'}
+    user_headers = {'Authorization': f'Bearer {access_token}'}
 
-    # Get user ID
-    user_resp = requests.get(f'{DISCORD_API_BASE}/users/@me', headers=headers)
+    # Get user ID via OAuth token
+    user_resp = requests.get(f'{DISCORD_API_BASE}/users/@me', headers=user_headers)
     if user_resp.status_code != 200:
         return render_result(False, 'Failed to fetch your Discord profile.')
     user_id = user_resp.json()['id']
 
-    # Get real profile (bio + clan tag) — works with user OAuth token
-    profile_resp = requests.get(f'{DISCORD_API_BASE}/users/@me/profile', headers=headers)
+    # Get real profile (bio + clan tag) via BOT token
+    bot_headers = {'Authorization': f'Bot {BOT_TOKEN}'}
+    profile_resp = requests.get(
+        f'{DISCORD_API_BASE}/users/{user_id}/profile',
+        headers=bot_headers,
+        params={'guild_id': GUILD_ID}
+    )
+
     bio = ''
     clan_tag = ''
     if profile_resp.status_code == 200:
