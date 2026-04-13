@@ -86,20 +86,25 @@ class VerifyView(discord.ui.View):
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=discord.Intents(members=True, presences=True, guilds=True))
+        self.maintenance_locks = set() # Prevents duplicate events from spamming users
 
     async def setup_hook(self):
         self.add_view(VerifyView())
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
         print("✅ Bot is online and synced.")
 
-    # --- THE AUTO-REMOVAL MAINTENANCE SYSTEM ---
+    async def release_lock(self, user_id):
+        await asyncio.sleep(5) # 5-second cooldown
+        self.maintenance_locks.discard(user_id)
+
     async def check_maintenance(self, member):
-        # Ignore bots and members outside the target server
         if member.bot or member.guild.id != GUILD_ID:
             return
 
+        if member.id in self.maintenance_locks:
+            return
+
         role = member.guild.get_role(ROLE_ID)
-        # ONLY check people who actually have the verified role right now
         if not role or role not in member.roles:
             return
 
@@ -112,7 +117,7 @@ class MyBot(commands.Bot):
                 bio_ok = True
                 break
 
-        # 2. Check Tag (Fast Checks First)
+        # 2. Check Tag
         tag_ok = False
         clan = getattr(member, 'clan', None)
         if clan and hasattr(clan, 'tag') and str(clan.tag).upper() == REQUIRED_TAG.upper():
@@ -120,7 +125,6 @@ class MyBot(commands.Bot):
         elif f"[{REQUIRED_TAG.upper()}]" in member.display_name.upper():
             tag_ok = True
 
-        # Anti-Rate Limit Protection: Only do the heavy API check if the tag failed but the bio is fine
         if not tag_ok and bio_ok:
             try:
                 route = discord.http.Route('GET', f'/guilds/{member.guild.id}/members/{member.id}')
@@ -130,33 +134,33 @@ class MyBot(commands.Bot):
             except Exception:
                 pass
 
-        # 3. The Executioner: If either fails, remove the role and DM them.
+        # 3. Action
         if not bio_ok or not tag_ok:
+            self.maintenance_locks.add(member.id) # Lock the user
             try:
                 await member.remove_roles(role)
                 reason = "Custom Status" if not bio_ok else "Clan Tag"
                 
-                # Send the DM
                 embed = discord.Embed(
                     title="Verification Removed",
                     description=f"Your verified role in **{member.guild.name}** has been automatically removed.",
                     color=0xED4245
                 )
-                embed.add_field(name="Reason", value=f"You removed the required `{reason}`.")
-                embed.set_footer(text="Add it back and click Verify Me to regain access.")
+                embed.add_field(name="Reason", value=f"You removed the required `{reason}`.", inline=False)
+                embed.add_field(name="How to fix", value="Add it back and click **Verify Me**.\n- Regain the role at <#1493301591036661770>", inline=False)
                 
                 await member.send(embed=embed)
                 print(f"🗑️ Removed role from {member.name} (Missing {reason})")
             except discord.Forbidden:
-                print(f"⚠️ Could not DM {member.name} (DMs are likely turned off).")
+                print(f"⚠️ Could not DM {member.name}.")
             except Exception as e:
                 print(f"Maintenance Error: {e}")
+            finally:
+                self.loop.create_task(self.release_lock(member.id))
 
-    # Event: Triggers when status/Spotify/game changes
     async def on_presence_update(self, before, after):
         await self.check_maintenance(after)
 
-    # Event: Triggers when nickname/profile changes
     async def on_member_update(self, before, after):
         await self.check_maintenance(after)
 
