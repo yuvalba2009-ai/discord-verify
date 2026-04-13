@@ -1,8 +1,0 @@
-[variables]
-NIXPACKS_PYTHON_VERSION = "3.12"
-
-[phases.build]
-cmds = ["pip install -r requirements.txt"]
-
-[phases.start]
-cmd = "python server.py & python bot.py"
