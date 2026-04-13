@@ -11,7 +11,7 @@ import time
 TOKEN           = os.environ['DISCORD_TOKEN']
 GUILD_ID        = int(os.environ['GUILD_ID'])
 ROLE_ID         = int(os.environ['ROLE_ID'])
-LOG_CHANNEL_ID  = int(os.environ['LOG_CHANNEL_ID']) # <-- NEW VARIABLE
+LOG_CHANNEL_ID  = int(os.environ['LOG_CHANNEL_ID'])
 REQUIRED_BIO    = os.environ.get('REQUIRED_BIO', 'discord.gg/justjoin')
 REQUIRED_TAG    = os.environ.get('REQUIRED_TAG', 'BACK')
 CLIENT_ID       = os.environ['CLIENT_ID']
@@ -72,7 +72,7 @@ class VerifyView(discord.ui.View):
                     authorized_users.discard(interaction.user.id)
                     await interaction.followup.send("✅ Verified! Welcome to the server.", ephemeral=True)
                     
-                    # --- LOGGING: ROLE ASSIGNED ---
+                    # Logging
                     log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
                     if log_channel:
                         current_time = int(time.time())
@@ -106,6 +106,15 @@ class MyBot(commands.Bot):
         if member.bot or member.guild.id != GUILD_ID:
             return
 
+        # --- OFFLINE PROTECTION ---
+        # Discord hides Custom Statuses when users go Offline or Invisible.
+        # If we check them now, it will look like they removed their bio.
+        # We skip them here. When they come back online, Discord will fire 
+        # another update event, and we will check them then.
+        if member.status == discord.Status.offline:
+            return
+
+        # 🛑 INSTANT LOCK
         if member.id in self.maintenance_locks:
             return
         self.maintenance_locks.add(member.id)
@@ -159,7 +168,7 @@ class MyBot(commands.Bot):
                 except discord.Forbidden:
                     print(f"⚠️ Could not DM {member.name}.")
 
-                # --- LOGGING: ROLE REMOVED ---
+                # Logging
                 log_channel = member.guild.get_channel(LOG_CHANNEL_ID)
                 if log_channel:
                     current_time = int(time.time())
