@@ -11,7 +11,6 @@ TOKEN           = os.environ['DISCORD_TOKEN']
 GUILD_ID        = int(os.environ['GUILD_ID'])
 ROLE_ID         = int(os.environ['ROLE_ID'])
 REQUIRED_BIO    = os.environ.get('REQUIRED_BIO', 'discord.gg/justjoin')
-REQUIRED_TAG    = os.environ.get('REQUIRED_TAG', 'BACK')
 CLIENT_ID       = os.environ['CLIENT_ID']
 CLIENT_SECRET   = os.environ['CLIENT_SECRET']
 REDIRECT_URI    = os.environ['REDIRECT_URI']
@@ -24,7 +23,7 @@ class VerifyView(discord.ui.View):
         oauth_url = f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify"
         self.add_item(discord.ui.Button(label='Authorize', style=discord.ButtonStyle.link, url=oauth_url, emoji='🔑'))
 
-@discord.ui.button(label='Verify Me', style=discord.ButtonStyle.green, custom_id='verify_me', emoji='✅')
+    @discord.ui.button(label='Verify Me', style=discord.ButtonStyle.green, custom_id='verify_me', emoji='✅')
     async def verify_me(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         
@@ -32,51 +31,29 @@ class VerifyView(discord.ui.View):
             return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
         try:
-            # Refreshing member data from the API
+            # Force refresh to see current status
             member = await interaction.guild.fetch_member(interaction.user.id)
             
-            # --- 1. Check Custom Status (Bio) ---
+            # Check Custom Status
             bio_ok = False
             if member.activities:
                 for activity in member.activities:
                     if isinstance(activity, discord.CustomActivity):
-                        if activity.name and REQUIRED_BIO.lower() in str(activity.name).lower():
+                        status = str(activity.name or "").lower()
+                        if REQUIRED_BIO.lower() in status:
                             bio_ok = True
                             break
-            
-            # --- 2. Check Clan Tag ---
-            tag_ok = False
-            
-            # Try the standard way first
-            clan = getattr(member, 'clan', None)
-            if clan and hasattr(clan, 'tag'):
-                if str(clan.tag).upper() == REQUIRED_TAG.upper():
-                    tag_ok = True
-            
-            # Fallback: check if the tag appears in the member's display name or status 
-            # (Some mobile users show tags differently)
-            if not tag_ok and member.display_name:
-                if f"[{REQUIRED_TAG.upper()}]" in member.display_name.upper():
-                    tag_ok = True
 
-            if bio_ok and tag_ok:
+            if bio_ok:
                 role = interaction.guild.get_role(ROLE_ID)
                 if role:
                     await member.add_roles(role)
                     authorized_users.discard(interaction.user.id)
-                    await interaction.followup.send("✅ Success! You have been verified.", ephemeral=True)
+                    await interaction.followup.send(f"✅ Verified! Role added.", ephemeral=True)
                 else:
-                    await interaction.followup.send("⚠️ Role not found. Check your ROLE_ID.", ephemeral=True)
+                    await interaction.followup.send("⚠️ Role not found. Check ROLE_ID.", ephemeral=True)
             else:
-                msg = "Verification Failed:\n"
-                msg += f"{'✅' if bio_ok else '❌'} Status: `{REQUIRED_BIO}`\n"
-                msg += f"{'✅' if tag_ok else '❌'} Clan Tag: `{REQUIRED_TAG}`"
-                await interaction.followup.send(msg, ephemeral=True)
-
-        except Exception as e:
-            # This logs the specific error to your Railway console so you can see it
-            print(f"Verification Error: {e}")
-            await interaction.followup.send(f"⚠️ An error occurred: {e}", ephemeral=True)
+                await interaction.followup.send(f"❌ Status must contain: `{REQUIRED_BIO}`\n(Ensure you are Online, not Invisible/DND)", ephemeral=True)
 
         except Exception as e:
             await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
