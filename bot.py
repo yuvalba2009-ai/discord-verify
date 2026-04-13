@@ -76,10 +76,37 @@ class MyBot(commands.Bot):
         self.add_view(VerifyView())
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
         print("✅ Bot is online and synced.")
+        
+        # Start the background sweep automatically upon boot
+        self.loop.create_task(self.startup_maintenance_sweep())
+
+    # --- THE STARTUP SWEEP ---
+    async def startup_maintenance_sweep(self):
+        await self.wait_until_ready()
+        print("🧹 Starting initial maintenance sweep for existing users...")
+        
+        guild = self.get_guild(GUILD_ID)
+        if not guild:
+            print("⚠️ Sweep failed: Guild not found.")
+            return
+
+        role = guild.get_role(ROLE_ID)
+        if not role:
+            print("⚠️ Sweep failed: Role not found.")
+            return
+
+        # Iterate through everyone who currently holds the role
+        for member in role.members:
+            if not member.bot and member.status not in [discord.Status.offline, discord.Status.invisible]:
+                await self.check_maintenance(member)
+                # 🛡️ 2-SECOND DELAY: Prevents Discord from rate-limiting the bot during a massive scan
+                await asyncio.sleep(2)
+                
+        print("✅ Initial maintenance sweep complete!")
 
     # --- HELPER FUNCTION: Centralized logic for checking a user ---
     async def evaluate_requirements(self, cached_member, api_member=None):
-        api_member = api_member or cached_member # Fallback to cached if API member isn't passed
+        api_member = api_member or cached_member
 
         # 1. Check Bio
         bio_ok = False
@@ -98,7 +125,7 @@ class MyBot(commands.Bot):
         elif f"[{REQUIRED_TAG.upper()}]" in api_member.display_name.upper():
             tag_ok = True
 
-        # API Bypass for tag if needed (only if tag failed but bio passed to save limits)
+        # API Bypass for tag
         if not tag_ok and bio_ok:
             try:
                 route = discord.http.Route('GET', f'/guilds/{cached_member.guild.id}/members/{cached_member.id}')
@@ -133,21 +160,17 @@ class MyBot(commands.Bot):
             bio_ok, tag_ok = await self.evaluate_requirements(member)
 
             if not bio_ok or not tag_ok:
-                # 🛡️ THE GRACE PERIOD FIX
-                # Discord lag causes "empty" profiles on login. Wait 5 seconds to let the API catch up.
+                # The Grace Period
                 await asyncio.sleep(5)
                 
-                # Fetch their absolute newest data
                 refreshed_member = member.guild.get_member(member.id)
                 
-                # If they went offline during the 5 seconds, cancel the kick
                 if not refreshed_member or refreshed_member.status in [discord.Status.offline, discord.Status.invisible]:
                     return 
 
                 # Check #2 (The Final Decision)
                 bio_ok_2, tag_ok_2 = await self.evaluate_requirements(refreshed_member)
 
-                # Only punish them if they fail BOTH times
                 if not bio_ok_2 or not tag_ok_2:
                     await refreshed_member.remove_roles(role)
                     reason = "Custom Status" if not bio_ok_2 else "Clan Tag"
@@ -174,7 +197,6 @@ class MyBot(commands.Bot):
         except Exception as e:
             print(f"Maintenance Error: {e}")
         finally:
-            # Unlock the user
             self.maintenance_locks.discard(member.id)
 
     async def on_presence_update(self, before, after):
