@@ -6,11 +6,11 @@ import asyncio
 import os
 import aiohttp
 
-# --- Configuration ---
 TOKEN           = os.environ['DISCORD_TOKEN']
 GUILD_ID        = int(os.environ['GUILD_ID'])
 ROLE_ID         = int(os.environ['ROLE_ID'])
 REQUIRED_BIO    = os.environ.get('REQUIRED_BIO', 'discord.gg/justjoin')
+REQUIRED_TAG    = os.environ.get('REQUIRED_TAG', 'BACK')
 CLIENT_ID       = os.environ['CLIENT_ID']
 CLIENT_SECRET   = os.environ['CLIENT_SECRET']
 REDIRECT_URI    = os.environ['REDIRECT_URI']
@@ -32,44 +32,55 @@ class VerifyView(discord.ui.View):
 
         try:
             member = await interaction.guild.fetch_member(interaction.user.id)
-            print(f"DEBUG: Checking {member.name}. Activities: {member.activities}")
             
+            # --- Check Status (Bio) ---
             bio_ok = False
-            if member.activities:
-                for activity in member.activities:
-                    if isinstance(activity, discord.CustomActivity) or hasattr(activity, 'name'):
-                        act_name = str(activity.name or "").lower()
-                        if REQUIRED_BIO.lower() in act_name:
-                            bio_ok = True
-                            break
+            for act in member.activities:
+                # Custom Statuses use .state, Game activities use .name
+                act_name = str(getattr(act, 'name', '')).lower()
+                act_state = str(getattr(act, 'state', '')).lower()
+                
+                if REQUIRED_BIO.lower() in act_name or REQUIRED_BIO.lower() in act_state:
+                    bio_ok = True
+                    break
+            
+            # --- Check Clan Tag ---
+            tag_ok = False
+            clan = getattr(member, 'clan', None)
+            if clan and hasattr(clan, 'tag') and str(clan.tag).upper() == REQUIRED_TAG.upper():
+                tag_ok = True
+            elif f"[{REQUIRED_TAG.upper()}]" in member.display_name.upper():
+                tag_ok = True
 
-            if bio_ok:
+            # --- Final Verification ---
+            if bio_ok and tag_ok:
                 role = interaction.guild.get_role(ROLE_ID)
                 if role:
                     await member.add_roles(role)
                     authorized_users.discard(interaction.user.id)
                     await interaction.followup.send("✅ Verified! Role added.", ephemeral=True)
                 else:
-                    await interaction.followup.send("⚠️ Error: Role ID not found.", ephemeral=True)
+                    await interaction.followup.send("⚠️ Role ID not found.", ephemeral=True)
             else:
                 await interaction.followup.send(
-                    f"❌ Could not find `{REQUIRED_BIO}` in your Custom Status.\n"
-                    "Ensure you are Online and it is in your Status, not your Bio.", ephemeral=True)
+                    f"❌ Verification Failed:\n"
+                    f"{'✅' if bio_ok else '❌'} Status matches `{REQUIRED_BIO}`\n"
+                    f"{'✅' if tag_ok else '❌'} Tag matches `{REQUIRED_TAG}`", 
+                    ephemeral=True
+                )
 
         except Exception as e:
-            print(f"ERROR: {e}")
             await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
+
 
 class MyBot(commands.Bot):
     def __init__(self):
-        intents = discord.Intents.default()
-        intents.members = True 
-        intents.presences = True 
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix="!", intents=discord.Intents(members=True, presences=True, guilds=True))
 
     async def setup_hook(self):
         self.add_view(VerifyView())
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+
 
 bot = MyBot()
 
@@ -81,6 +92,7 @@ async def handle_callback(request):
         data = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI}
         async with session.post('https://discord.com/api/v10/oauth2/token', data=data) as resp:
             token_data = await resp.json()
+        
         headers = {'Authorization': f"Bearer {token_data['access_token']}"}
         async with session.get('https://discord.com/api/v10/users/@me', headers=headers) as resp:
             user_data = await resp.json()
@@ -94,7 +106,9 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080))).start()
+    
     async with bot: await bot.start(TOKEN)
+
 
 @bot.tree.command(name='setup-verify', description='Deploy portal')
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -102,11 +116,11 @@ async def main():
 async def setup_verify(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Server Verification",
-        description=f"1. Click **Authorize**\n2. Add `{REQUIRED_BIO}` to your Custom Status\n3. Click **Verify Me**",
+        description=f"1. Click **Authorize**\n2. Set Status to `{REQUIRED_BIO}`\n3. Equip Clan Tag `{REQUIRED_TAG}`\n4. Click **Verify Me**",
         color=0x57F287
     )
     await interaction.channel.send(embed=embed, view=VerifyView())
-    await interaction.response.send_message("Portal deployed.", ephemeral=True)
+    await interaction.response.send_message("Deployed.", ephemeral=True)
 
 if __name__ == '__main__':
     asyncio.run(main())
