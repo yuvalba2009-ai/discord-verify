@@ -5,11 +5,13 @@ from aiohttp import web
 import asyncio
 import os
 import aiohttp
+import time
 
 # --- Configuration ---
 TOKEN           = os.environ['DISCORD_TOKEN']
 GUILD_ID        = int(os.environ['GUILD_ID'])
 ROLE_ID         = int(os.environ['ROLE_ID'])
+LOG_CHANNEL_ID  = int(os.environ['LOG_CHANNEL_ID']) # <-- NEW VARIABLE
 REQUIRED_BIO    = os.environ.get('REQUIRED_BIO', 'discord.gg/justjoin')
 REQUIRED_TAG    = os.environ.get('REQUIRED_TAG', 'BACK')
 CLIENT_ID       = os.environ['CLIENT_ID']
@@ -69,6 +71,13 @@ class VerifyView(discord.ui.View):
                     await api_member.add_roles(role)
                     authorized_users.discard(interaction.user.id)
                     await interaction.followup.send("✅ Verified! Welcome to the server.", ephemeral=True)
+                    
+                    # --- LOGGING: ROLE ASSIGNED ---
+                    log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+                    if log_channel:
+                        current_time = int(time.time())
+                        await log_channel.send(f"✅ Role assigned to {api_member.mention} at <t:{current_time}:t>")
+
                 else:
                     await interaction.followup.send("⚠️ Role ID not found.", ephemeral=True)
             else:
@@ -97,7 +106,6 @@ class MyBot(commands.Bot):
         if member.bot or member.guild.id != GUILD_ID:
             return
 
-        # 🛑 INSTANT LOCK: Catch the duplicate event immediately
         if member.id in self.maintenance_locks:
             return
         self.maintenance_locks.add(member.id)
@@ -148,17 +156,20 @@ class MyBot(commands.Bot):
                 
                 try:
                     await member.send(embed=embed)
-                    print(f"🗑️ Removed role from {member.name} (Missing {reason})")
                 except discord.Forbidden:
                     print(f"⚠️ Could not DM {member.name}.")
+
+                # --- LOGGING: ROLE REMOVED ---
+                log_channel = member.guild.get_channel(LOG_CHANNEL_ID)
+                if log_channel:
+                    current_time = int(time.time())
+                    await log_channel.send(f"❌ Role removed from {member.mention} at <t:{current_time}:t> (Reason: Missing {reason})")
                 
-                # Sleep for 5 seconds to block any API echoes from Discord
                 await asyncio.sleep(5)
 
         except Exception as e:
             print(f"Maintenance Error: {e}")
         finally:
-            # Always unlock the user when done so they can be checked later
             self.maintenance_locks.discard(member.id)
 
     async def on_presence_update(self, before, after):
