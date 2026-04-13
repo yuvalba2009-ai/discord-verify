@@ -6,6 +6,7 @@ import asyncio
 import os
 import aiohttp
 
+# --- Configuration ---
 TOKEN           = os.environ['DISCORD_TOKEN']
 GUILD_ID        = int(os.environ['GUILD_ID'])
 ROLE_ID         = int(os.environ['ROLE_ID'])
@@ -31,44 +32,48 @@ class VerifyView(discord.ui.View):
             return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
         try:
-            # FIX: Use cache instead of fetch_member. fetch_member strips activity data!
-            member = interaction.guild.get_member(interaction.user.id) or interaction.user
+            # 1. Ask the Live Cache (For the Custom Status)
+            cached_member = interaction.guild.get_member(interaction.user.id) or interaction.user
             
-            # --- Check Status (Bio) ---
+            # 2. Ask the Database (For the Clan Tag)
+            api_member = await interaction.guild.fetch_member(interaction.user.id)
+            
+            # --- Check Status (Bio) using Live Cache ---
             bio_ok = False
-            for act in member.activities:
+            for act in cached_member.activities:
                 act_name = str(getattr(act, 'name', '')).lower()
                 act_state = str(getattr(act, 'state', '')).lower()
                 if REQUIRED_BIO.lower() in act_name or REQUIRED_BIO.lower() in act_state:
                     bio_ok = True
                     break
             
-            # --- Check Clan Tag ---
+            # --- Check Clan Tag using Database ---
             tag_ok = False
-            clan = getattr(member, 'clan', None)
+            clan = getattr(api_member, 'clan', None)
             if clan and hasattr(clan, 'tag') and str(clan.tag).upper() == REQUIRED_TAG.upper():
                 tag_ok = True
-            elif f"[{REQUIRED_TAG.upper()}]" in member.display_name.upper():
+            elif f"[{REQUIRED_TAG.upper()}]" in api_member.display_name.upper():
                 tag_ok = True
 
             # --- Final Verification ---
             if bio_ok and tag_ok:
                 role = interaction.guild.get_role(ROLE_ID)
                 if role:
-                    await member.add_roles(role)
+                    await api_member.add_roles(role)
                     authorized_users.discard(interaction.user.id)
-                    await interaction.followup.send("✅ Verified! Role added.", ephemeral=True)
+                    await interaction.followup.send("✅ Verified! Welcome to the server.", ephemeral=True)
                 else:
-                    await interaction.followup.send("⚠️ Role ID not found.", ephemeral=True)
+                    await interaction.followup.send("⚠️ Role ID not found. Check your Railway variables.", ephemeral=True)
             else:
                 await interaction.followup.send(
                     f"❌ Verification Failed:\n"
                     f"{'✅' if bio_ok else '❌'} Status matches `{REQUIRED_BIO}`\n"
-                    f"{'✅' if tag_ok else '❌'} Tag matches `{REQUIRED_TAG}`", 
+                    f"{'✅' if tag_ok else '❌'} Clan Tag matches `{REQUIRED_TAG}`", 
                     ephemeral=True
                 )
 
         except Exception as e:
+            print(f"ERROR: {e}")
             await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
 
 
@@ -97,7 +102,7 @@ async def handle_callback(request):
             user_data = await resp.json()
             authorized_users.add(int(user_data['id']))
 
-    return web.Response(text="<html><body style='background:#0e0f13;color:white;text-align:center;padding-top:100px;'><h1>✅ Authorized!</h1><p>Close this tab and click Verify Me.</p><script>setTimeout(window.close, 3000);</script></body></html>", content_type='text/html')
+    return web.Response(text="<html><body style='background:#0e0f13;color:white;text-align:center;padding-top:100px;font-family:sans-serif;'><h1>✅ Authorized!</h1><p>Close this tab and click Verify Me in Discord.</p><script>setTimeout(window.close, 3000);</script></body></html>", content_type='text/html')
 
 async def main():
     app = web.Application()
