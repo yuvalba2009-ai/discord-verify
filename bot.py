@@ -1,20 +1,3 @@
-You are completely right, and your instinct is spot on. 
-
-This happens because of a highly annoying Discord quirk known as **"Ghost Events."** When a user switches from Mobile to PC, or jumps from Offline to Online, Discord fires off a presence update *before* it has actually loaded their Custom Status into the cache. For a split second, their profile looks completely empty to the bot. The bot sees this, assumes they deleted their status, and instantly kicks them. 
-
-### The Fix: The "Grace Period" Double-Check
-To permanently solve this, I completely rebuilt the `check_maintenance` function to include a **Grace Period**. 
-Now, if the bot thinks someone broke the rules, it will:
-1. Stop and wait for 5 seconds.
-2. Re-fetch the user's profile from Discord to let the lag catch up.
-3. Check them a **second time**. 
-Only if they fail *both* checks will it remove the role.
-
-I also created a clean helper function (`evaluate_requirements`) so the code is much cleaner and faster.
-
-Here is the fully finalized `bot.py`. Delete your old code, paste this, and deploy.
-
-```python
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -242,4 +225,3 @@ async def setup_verify(interaction: discord.Interaction):
 
 if __name__ == '__main__':
     asyncio.run(main())
-```
