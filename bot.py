@@ -27,7 +27,6 @@ class VerifyView(discord.ui.View):
             f"&response_type=code"
             f"&scope=identify"
         )
-        # Removed the "1." from label
         self.add_item(discord.ui.Button(label='Authorize', style=discord.ButtonStyle.link, url=oauth_url, emoji='🔑'))
 
     @discord.ui.button(label='Verify Me', style=discord.ButtonStyle.green, custom_id='verify_me', emoji='✅')
@@ -37,39 +36,43 @@ class VerifyView(discord.ui.View):
         if interaction.user.id not in authorized_users:
             return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
-        # Force a fresh fetch of the member to see the newest profile data/tags
         try:
-            guild = interaction.guild
-            member = await guild.fetch_member(interaction.user.id)
+            # Force a fresh API call to get the newest tag/status
+            member = await interaction.guild.fetch_member(interaction.user.id)
             
-            # Check Custom Status (Bio)
+            # Check Bio (Custom Status)
             bio_ok = False
             for activity in member.activities:
                 if isinstance(activity, discord.CustomActivity):
-                    if activity.name and REQUIRED_BIO.lower() in activity.name.lower():
+                    status_text = str(activity.name or "")
+                    if REQUIRED_BIO.lower() in status_text.lower():
                         bio_ok = True
                         break
             
             # Check Clan Tag
             tag_ok = False
-            # Some versions of discord.py use member.clan, others might store it in public_flags
             if hasattr(member, 'clan') and member.clan:
-                if member.clan.tag.upper() == REQUIRED_TAG.upper():
+                if str(member.clan.tag).upper() == REQUIRED_TAG.upper():
                     tag_ok = True
 
             if bio_ok and tag_ok:
-                role = guild.get_role(ROLE_ID)
-                await member.add_roles(role)
-                authorized_users.discard(interaction.user.id)
-                await interaction.followup.send("✅ Success! Welcome to the server.", ephemeral=True)
+                role = interaction.guild.get_role(ROLE_ID)
+                if role:
+                    await member.add_roles(role)
+                    authorized_users.discard(interaction.user.id)
+                    await interaction.followup.send("✅ Success! The role has been added.", ephemeral=True)
+                else:
+                    await interaction.followup.send("⚠️ Error: Role ID not found. Contact Admin.", ephemeral=True)
             else:
-                msg = "Verification failed:\n"
-                if not bio_ok: msg += f"- Add `{REQUIRED_BIO}` to your Custom Status.\n"
-                if not tag_ok: msg += f"- Equip the `{REQUIRED_TAG}` Clan Tag.\n"
+                # Feedback on what is missing
+                msg = "Verification Failed:\n"
+                msg += f"{'✅' if bio_ok else '❌'} Status/Bio: `{REQUIRED_BIO}`\n"
+                msg += f"{'✅' if tag_ok else '❌'} Clan Tag: `{REQUIRED_TAG}`"
                 await interaction.followup.send(msg, ephemeral=True)
 
         except Exception as e:
-            await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
+            print(f"Verify Error: {e}")
+            await interaction.followup.send("⚠️ Could not read your profile. Ensure you are 'Online' and try again.", ephemeral=True)
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -84,27 +87,34 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-@bot.tree.command(name='setup-verify', description='Setup verification')
+@bot.tree.command(name='setup-verify', description='Deploys verification portal')
 @app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.checks.has_permissions(administrator=True)
 async def setup_verify(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Server Verification",
-        description=f"1. Click **Authorize**\n2. Set status to `{REQUIRED_BIO}`\n3. Equip `{REQUIRED_TAG}` Tag\n4. Click **Verify Me**",
+        description=(
+            f"1. Click **Authorize**\n"
+            f"2. Set Custom Status to `{REQUIRED_BIO}`\n"
+            f"3. Equip `{REQUIRED_TAG}` Clan Tag\n"
+            "4. Click **Verify Me**"
+        ),
         color=0x57F287
     )
     await interaction.channel.send(embed=embed, view=VerifyView())
-    await interaction.response.send_message("Deployed!", ephemeral=True)
+    await interaction.response.send_message("Portal Deployed.", ephemeral=True)
 
+# --- Internal API ---
 async def start_api():
     app = web.Application()
-    app.router.add_post('/internal/oauth-callback', lambda r: handle_callback(r))
+    app.router.add_post('/internal/oauth-callback', handle_internal)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', 8081).start()
 
-async def handle_callback(request):
+async def handle_internal(request):
     if request.headers.get('X-Internal-Secret') != INTERNAL_SECRET:
-        return web.json_response({'status': 'unauthorized'}, status=401)
+        return web.json_response({'error': 'unauthorized'}, status=401)
     data = await request.json()
     authorized_users.add(int(data['user_id']))
     return web.json_response({'status': 'ok'})
