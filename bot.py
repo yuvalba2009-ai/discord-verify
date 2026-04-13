@@ -32,13 +32,10 @@ class VerifyView(discord.ui.View):
             return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
         try:
-            # 1. Ask the Live Cache (For the Custom Status)
             cached_member = interaction.guild.get_member(interaction.user.id) or interaction.user
-            
-            # 2. Ask the Database (For the base profile)
             api_member = await interaction.guild.fetch_member(interaction.user.id)
             
-            # --- Check Status (Bio) using Live Cache ---
+            # Check Status (Bio)
             bio_ok = False
             for act in cached_member.activities:
                 act_name = str(getattr(act, 'name', '')).lower()
@@ -47,30 +44,25 @@ class VerifyView(discord.ui.View):
                     bio_ok = True
                     break
             
-            # --- Check Clan Tag using RAW API Bypass ---
+            # Check Clan Tag
             tag_ok = False
-            
-            # Method 1: The standard library check
             clan = getattr(api_member, 'clan', None)
             if clan and hasattr(clan, 'tag') and str(clan.tag).upper() == REQUIRED_TAG.upper():
                 tag_ok = True
             
-            # Method 2: The Raw HTTP Bypass
             if not tag_ok:
                 try:
                     route = discord.http.Route('GET', f'/guilds/{interaction.guild.id}/members/{interaction.user.id}')
                     raw_data = await interaction.client.http.request(route)
-                    
                     if "'tag':" in str(raw_data).lower() and REQUIRED_TAG.lower() in str(raw_data).lower():
                         tag_ok = True
-                except Exception as raw_e:
-                    print(f"Raw HTTP Error: {raw_e}")
+                except Exception:
+                    pass
 
-            # Method 3: The Nickname Fallback
             if not tag_ok and f"[{REQUIRED_TAG.upper()}]" in api_member.display_name.upper():
                 tag_ok = True
 
-            # --- Final Verification ---
+            # Final Action
             if bio_ok and tag_ok:
                 role = interaction.guild.get_role(ROLE_ID)
                 if role:
@@ -78,7 +70,7 @@ class VerifyView(discord.ui.View):
                     authorized_users.discard(interaction.user.id)
                     await interaction.followup.send("✅ Verified! Welcome to the server.", ephemeral=True)
                 else:
-                    await interaction.followup.send("⚠️ Role ID not found. Check your Railway variables.", ephemeral=True)
+                    await interaction.followup.send("⚠️ Role ID not found.", ephemeral=True)
             else:
                 await interaction.followup.send(
                     f"❌ Verification Failed:\n"
@@ -88,7 +80,6 @@ class VerifyView(discord.ui.View):
                 )
 
         except Exception as e:
-            print(f"ERROR: {e}")
             await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
 
 
@@ -99,6 +90,75 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         self.add_view(VerifyView())
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print("✅ Bot is online and synced.")
+
+    # --- THE AUTO-REMOVAL MAINTENANCE SYSTEM ---
+    async def check_maintenance(self, member):
+        # Ignore bots and members outside the target server
+        if member.bot or member.guild.id != GUILD_ID:
+            return
+
+        role = member.guild.get_role(ROLE_ID)
+        # ONLY check people who actually have the verified role right now
+        if not role or role not in member.roles:
+            return
+
+        # 1. Check Bio
+        bio_ok = False
+        for act in member.activities:
+            act_name = str(getattr(act, 'name', '')).lower()
+            act_state = str(getattr(act, 'state', '')).lower()
+            if REQUIRED_BIO.lower() in act_name or REQUIRED_BIO.lower() in act_state:
+                bio_ok = True
+                break
+
+        # 2. Check Tag (Fast Checks First)
+        tag_ok = False
+        clan = getattr(member, 'clan', None)
+        if clan and hasattr(clan, 'tag') and str(clan.tag).upper() == REQUIRED_TAG.upper():
+            tag_ok = True
+        elif f"[{REQUIRED_TAG.upper()}]" in member.display_name.upper():
+            tag_ok = True
+
+        # Anti-Rate Limit Protection: Only do the heavy API check if the tag failed but the bio is fine
+        if not tag_ok and bio_ok:
+            try:
+                route = discord.http.Route('GET', f'/guilds/{member.guild.id}/members/{member.id}')
+                raw_data = await self.http.request(route)
+                if "'tag':" in str(raw_data).lower() and REQUIRED_TAG.lower() in str(raw_data).lower():
+                    tag_ok = True
+            except Exception:
+                pass
+
+        # 3. The Executioner: If either fails, remove the role and DM them.
+        if not bio_ok or not tag_ok:
+            try:
+                await member.remove_roles(role)
+                reason = "Custom Status" if not bio_ok else "Clan Tag"
+                
+                # Send the DM
+                embed = discord.Embed(
+                    title="Verification Removed",
+                    description=f"Your verified role in **{member.guild.name}** has been automatically removed.",
+                    color=0xED4245
+                )
+                embed.add_field(name="Reason", value=f"You removed the required `{reason}`.")
+                embed.set_footer(text="Add it back and click Verify Me to regain access.")
+                
+                await member.send(embed=embed)
+                print(f"🗑️ Removed role from {member.name} (Missing {reason})")
+            except discord.Forbidden:
+                print(f"⚠️ Could not DM {member.name} (DMs are likely turned off).")
+            except Exception as e:
+                print(f"Maintenance Error: {e}")
+
+    # Event: Triggers when status/Spotify/game changes
+    async def on_presence_update(self, before, after):
+        await self.check_maintenance(after)
+
+    # Event: Triggers when nickname/profile changes
+    async def on_member_update(self, before, after):
+        await self.check_maintenance(after)
 
 
 bot = MyBot()
@@ -127,7 +187,6 @@ async def main():
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080))).start()
     
     async with bot: await bot.start(TOKEN)
-
 
 @bot.tree.command(name='setup-verify', description='Deploy portal')
 @app_commands.guilds(discord.Object(id=GUILD_ID))
