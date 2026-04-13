@@ -31,16 +31,20 @@ class VerifyView(discord.ui.View):
             return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
         try:
-            # Force refresh to see current status
+            # Refreshing member from API to get the latest status
             member = await interaction.guild.fetch_member(interaction.user.id)
             
-            # Check Custom Status
+            # DEBUG: Check Railway logs to see what the bot sees
+            print(f"DEBUG: Checking {member.name}. Activities: {member.activities}")
+            
             bio_ok = False
             if member.activities:
                 for activity in member.activities:
+                    # CustomActivity is the "Custom Status" message
                     if isinstance(activity, discord.CustomActivity):
-                        status = str(activity.name or "").lower()
-                        if REQUIRED_BIO.lower() in status:
+                        status_text = str(activity.name or "").lower()
+                        print(f"DEBUG: Found Status: {status_text}")
+                        if REQUIRED_BIO.lower() in status_text:
                             bio_ok = True
                             break
 
@@ -49,25 +53,31 @@ class VerifyView(discord.ui.View):
                 if role:
                     await member.add_roles(role)
                     authorized_users.discard(interaction.user.id)
-                    await interaction.followup.send(f"✅ Verified! Role added.", ephemeral=True)
+                    await interaction.followup.send("✅ Everything matches! Role added.", ephemeral=True)
                 else:
-                    await interaction.followup.send("⚠️ Role not found. Check ROLE_ID.", ephemeral=True)
+                    await interaction.followup.send("⚠️ Error: Role ID not found in server settings.", ephemeral=True)
             else:
-                await interaction.followup.send(f"❌ Status must contain: `{REQUIRED_BIO}`\n(Ensure you are Online, not Invisible/DND)", ephemeral=True)
+                await interaction.followup.send(
+                    f"❌ Could not find `{REQUIRED_BIO}` in your **Custom Status**.\n\n"
+                    "**Note:** Ensure you are set to **Online** (Green circle) and it's in your status, not your 'About Me' bio.", 
+                    ephemeral=True
+                )
 
         except Exception as e:
+            print(f"CRITICAL ERROR: {e}")
             await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
 
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True 
-        intents.presences = True 
+        intents.presences = True # MUST BE ON IN DEV PORTAL
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
         self.add_view(VerifyView())
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print("✅ Commands synced.")
 
 bot = MyBot()
 
@@ -76,7 +86,13 @@ async def handle_callback(request):
     if not code: return web.Response(text="No code", status=400)
     
     async with aiohttp.ClientSession() as session:
-        data = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI}
+        data = {
+            'client_id': CLIENT_ID, 
+            'client_secret': CLIENT_SECRET, 
+            'grant_type': 'authorization_code', 
+            'code': code, 
+            'redirect_uri': REDIRECT_URI
+        }
         async with session.post('https://discord.com/api/v10/oauth2/token', data=data) as resp:
             token_data = await resp.json()
         
@@ -85,21 +101,36 @@ async def handle_callback(request):
             user_data = await resp.json()
             authorized_users.add(int(user_data['id']))
 
-    return web.Response(text="<html><body style='background:#0e0f13;color:white;text-align:center;padding-top:100px;'><h1>✅ Authorized!</h1><p>Close this and click Verify Me.</p><script>setTimeout(window.close, 3000);</script></body></html>", content_type='text/html')
+    return web.Response(text="""
+        <html><body style='background:#0e0f13;color:white;text-align:center;padding-top:100px;font-family:sans-serif;'>
+            <h1 style='color:#57F287;'>✅ Authorized!</h1>
+            <p>Close this tab and click <b>Verify Me</b> in Discord.</p>
+            <script>setTimeout(window.close, 3000);</script>
+        </body></html>
+    """, content_type='text/html')
 
 async def main():
     app = web.Application()
     app.router.add_get('/callback', handle_callback)
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080))).start()
-    async with bot: await bot.start(TOKEN)
+    port = int(os.environ.get("PORT", 8080))
+    await web.TCPSite(runner, '0.0.0.0', port).start()
+    
+    async with bot:
+        await bot.start(TOKEN)
 
 @bot.tree.command(name='setup-verify', description='Deploy portal')
 @app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.checks.has_permissions(administrator=True)
 async def setup_verify(interaction: discord.Interaction):
-    await interaction.channel.send(view=VerifyView())
-    await interaction.response.send_message("Deployed.", ephemeral=True)
+    embed = discord.Embed(
+        title="Verification Portal",
+        description=f"1. Click **Authorize**\n2. Add `{REQUIRED_BIO}` to your Status\n3. Click **Verify Me**",
+        color=0x57F287
+    )
+    await interaction.channel.send(embed=embed, view=VerifyView())
+    await interaction.response.send_message("Portal deployed.", ephemeral=True)
 
 if __name__ == '__main__':
     asyncio.run(main())
