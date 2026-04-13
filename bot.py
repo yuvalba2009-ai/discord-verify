@@ -31,15 +31,14 @@ class VerifyView(discord.ui.View):
             return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
         try:
-            member = await interaction.guild.fetch_member(interaction.user.id)
+            # FIX: Use cache instead of fetch_member. fetch_member strips activity data!
+            member = interaction.guild.get_member(interaction.user.id) or interaction.user
             
             # --- Check Status (Bio) ---
             bio_ok = False
             for act in member.activities:
-                # Custom Statuses use .state, Game activities use .name
                 act_name = str(getattr(act, 'name', '')).lower()
                 act_state = str(getattr(act, 'state', '')).lower()
-                
                 if REQUIRED_BIO.lower() in act_name or REQUIRED_BIO.lower() in act_state:
                     bio_ok = True
                     break
