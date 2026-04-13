@@ -35,7 +35,7 @@ class VerifyView(discord.ui.View):
             # 1. Ask the Live Cache (For the Custom Status)
             cached_member = interaction.guild.get_member(interaction.user.id) or interaction.user
             
-            # 2. Ask the Database (For the Clan Tag)
+            # 2. Ask the Database (For the base profile)
             api_member = await interaction.guild.fetch_member(interaction.user.id)
             
             # --- Check Status (Bio) using Live Cache ---
@@ -47,12 +47,27 @@ class VerifyView(discord.ui.View):
                     bio_ok = True
                     break
             
-            # --- Check Clan Tag using Database ---
+            # --- Check Clan Tag using RAW API Bypass ---
             tag_ok = False
+            
+            # Method 1: The standard library check
             clan = getattr(api_member, 'clan', None)
             if clan and hasattr(clan, 'tag') and str(clan.tag).upper() == REQUIRED_TAG.upper():
                 tag_ok = True
-            elif f"[{REQUIRED_TAG.upper()}]" in api_member.display_name.upper():
+            
+            # Method 2: The Raw HTTP Bypass
+            if not tag_ok:
+                try:
+                    route = discord.http.Route('GET', f'/guilds/{interaction.guild.id}/members/{interaction.user.id}')
+                    raw_data = await interaction.client.http.request(route)
+                    
+                    if "'tag':" in str(raw_data).lower() and REQUIRED_TAG.lower() in str(raw_data).lower():
+                        tag_ok = True
+                except Exception as raw_e:
+                    print(f"Raw HTTP Error: {raw_e}")
+
+            # Method 3: The Nickname Fallback
+            if not tag_ok and f"[{REQUIRED_TAG.upper()}]" in api_member.display_name.upper():
                 tag_ok = True
 
             # --- Final Verification ---
