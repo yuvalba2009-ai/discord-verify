@@ -24,7 +24,7 @@ class VerifyView(discord.ui.View):
         oauth_url = f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify"
         self.add_item(discord.ui.Button(label='Authorize', style=discord.ButtonStyle.link, url=oauth_url, emoji='🔑'))
 
-    @discord.ui.button(label='Verify Me', style=discord.ButtonStyle.green, custom_id='verify_me', emoji='✅')
+@discord.ui.button(label='Verify Me', style=discord.ButtonStyle.green, custom_id='verify_me', emoji='✅')
     async def verify_me(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         
@@ -32,44 +32,51 @@ class VerifyView(discord.ui.View):
             return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
         try:
-            # fetch_member is essential to get the most recent data
+            # Refreshing member data from the API
             member = await interaction.guild.fetch_member(interaction.user.id)
             
             # --- 1. Check Custom Status (Bio) ---
             bio_ok = False
-            for activity in member.activities:
-                if isinstance(activity, discord.CustomActivity):
-                    if activity.name and REQUIRED_BIO.lower() in str(activity.name).lower():
-                        bio_ok = True
-                        break
+            if member.activities:
+                for activity in member.activities:
+                    if isinstance(activity, discord.CustomActivity):
+                        if activity.name and REQUIRED_BIO.lower() in str(activity.name).lower():
+                            bio_ok = True
+                            break
             
-            # --- 2. Check Clan Tag (Multi-method check) ---
+            # --- 2. Check Clan Tag ---
             tag_ok = False
             
-            # Method A: Direct attribute (Latest discord.py)
-            if hasattr(member, 'clan') and member.clan:
-                if str(member.clan.tag).upper() == REQUIRED_TAG.upper():
+            # Try the standard way first
+            clan = getattr(member, 'clan', None)
+            if clan and hasattr(clan, 'tag'):
+                if str(clan.tag).upper() == REQUIRED_TAG.upper():
                     tag_ok = True
             
-            # Method B: Check through public flags (Some versions store it here)
-            if not tag_ok:
-                # This is a fallback in case the bot version is slightly behind
-                # but can still see the clan data in the raw member payload
-                raw_data = getattr(member, '_user', {}).__dict__.get('_data', {})
-                clan_data = raw_data.get('clan', {})
-                if clan_data and clan_data.get('tag', '').upper() == REQUIRED_TAG.upper():
+            # Fallback: check if the tag appears in the member's display name or status 
+            # (Some mobile users show tags differently)
+            if not tag_ok and member.display_name:
+                if f"[{REQUIRED_TAG.upper()}]" in member.display_name.upper():
                     tag_ok = True
 
             if bio_ok and tag_ok:
                 role = interaction.guild.get_role(ROLE_ID)
-                await member.add_roles(role)
-                authorized_users.discard(interaction.user.id)
-                await interaction.followup.send("✅ Success! Role granted.", ephemeral=True)
+                if role:
+                    await member.add_roles(role)
+                    authorized_users.discard(interaction.user.id)
+                    await interaction.followup.send("✅ Success! You have been verified.", ephemeral=True)
+                else:
+                    await interaction.followup.send("⚠️ Role not found. Check your ROLE_ID.", ephemeral=True)
             else:
                 msg = "Verification Failed:\n"
                 msg += f"{'✅' if bio_ok else '❌'} Status: `{REQUIRED_BIO}`\n"
                 msg += f"{'✅' if tag_ok else '❌'} Clan Tag: `{REQUIRED_TAG}`"
                 await interaction.followup.send(msg, ephemeral=True)
+
+        except Exception as e:
+            # This logs the specific error to your Railway console so you can see it
+            print(f"Verification Error: {e}")
+            await interaction.followup.send(f"⚠️ An error occurred: {e}", ephemeral=True)
 
         except Exception as e:
             await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
