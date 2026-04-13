@@ -4,109 +4,99 @@ from discord import app_commands
 from aiohttp import web
 import asyncio
 import os
+import aiohttp
 
-# ============================================================
-#  All secrets loaded from environment variables — safe for public GitHubb
-# ============================================================
-TOKEN           = os.environ['DISCORD_TOKEN']
-GUILD_ID        = int(os.environ['GUILD_ID'])
-ROLE_ID         = int(os.environ['ROLE_ID'])
-REQUIRED_BIO    = os.environ.get('REQUIRED_BIO', 'discord.gg/justjoin')
-REQUIRED_TAG    = os.environ.get('REQUIRED_TAG', 'BACK')
-VERIFY_URL      = os.environ['VERIFY_URL']
+# Config
+TOKEN = os.environ['DISCORD_TOKEN']
+GUILD_ID = int(os.environ['GUILD_ID'])
+ROLE_ID = int(os.environ['ROLE_ID'])
+REQUIRED_BIO = os.environ.get('REQUIRED_BIO', 'discord.gg/justjoin')
+REQUIRED_TAG = os.environ.get('REQUIRED_TAG', 'BACK')
 INTERNAL_SECRET = os.environ['INTERNAL_SECRET']
-# ============================================================
+CLIENT_ID = os.environ['CLIENT_ID']
+REDIRECT_URI = os.environ['REDIRECT_URI']
 
-intents = discord.Intents.default()
-intents.members = True
-
-bot = commands.Bot(command_prefix='!', intents=intents)
-
+authorized_users = set()
 
 class VerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(
-            label='Verify Me',
-            style=discord.ButtonStyle.link,
-            emoji='✅',
-            url=VERIFY_URL
-        ))
+        oauth_url = f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify"
+        self.add_item(discord.ui.Button(label='1. Authorize', style=discord.ButtonStyle.link, url=oauth_url))
 
+    @discord.ui.button(label='2. Verify Me', style=discord.ButtonStyle.green, custom_id='verify_me')
+    async def verify_me(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
+        if interaction.user.id not in authorized_users:
+            return await interaction.followup.send("❌ Please click **Authorize** first.", ephemeral=True)
 
-@bot.event
-async def on_ready():
-    bot.add_view(VerifyView())
-    try:
-        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print(f'✅ Synced {len(synced)} command(s)')
-    except Exception as e:
-        print(f'Sync error: {e}')
-    print(f'🤖 Logged in as {bot.user}')
+        # Note: Standard Bot tokens cannot see "Bio" or "Clan Tags" for all users 
+        # unless the user is in a guild with the bot.
+        member = interaction.guild.get_member(interaction.user.id)
+        
+        # This part requires the bot to have 'Member Profiles' / 'Intents.members'
+        # Verification Logic
+        bio_content = "" # Bio is restricted in standard API, but we check what's available
+        
+        # Logic for verification
+        # Due to API restrictions, bots usually check 'Activity' or 'Custom Status'
+        # If your bot is a "Clan" bot, it can access 'member.clan'
+        
+        has_bio = REQUIRED_BIO.lower() in (getattr(member, 'description', '') or "").lower()
+        # Specific check for Clan Tag if available in your discord.py version
+        has_tag = False
+        if hasattr(member, 'clan') and member.clan:
+            has_tag = member.clan.tag.upper() == REQUIRED_TAG.upper()
 
+        if has_bio and has_tag:
+            role = interaction.guild.get_role(ROLE_ID)
+            await member.add_roles(role)
+            await interaction.followup.send("✅ Verified! Role added.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Verification failed. Ensure bio has `{REQUIRED_BIO}` and Tag is `{REQUIRED_TAG}`.", ephemeral=True)
 
-async def assign_role_handler(request):
-    secret = request.headers.get('X-Internal-Secret')
-    if secret != INTERNAL_SECRET:
-        return web.json_response({'error': 'Unauthorized'}, status=401)
+class MyBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.members = True 
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents)
 
-    data = await request.json()
-    user_id = int(data['user_id'])
+    async def setup_hook(self):
+        self.add_view(VerifyView())
 
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return web.json_response({'error': 'Guild not found'}, status=404)
+bot = MyBot()
 
-    member = guild.get_member(user_id) or await guild.fetch_member(user_id)
-    if not member:
-        return web.json_response({'error': 'Member not found'}, status=404)
-
-    role = guild.get_role(ROLE_ID)
-    await member.add_roles(role)
-    return web.json_response({'success': True})
-
-
-async def start_internal_server():
-    app = web.Application()
-    app.router.add_post('/internal/assign-role', assign_role_handler)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8081)
-    await site.start()
-    print('🔌 Internal API running on port 8081')
-
-
-@bot.tree.command(
-    name='setup-verify',
-    description='Posts the verification button in this channel (admin only)',
-    guild=discord.Object(id=GUILD_ID)
-)
-@app_commands.checks.has_permissions(manage_roles=True)
-async def setup_verify(interaction: discord.Interaction):
+@bot.tree.command(name='setup-verification', description='Setup the verification portal')
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_verification(interaction: discord.Interaction):
     embed = discord.Embed(
-        title='✅ Verification',
-        description=(
-            f'To get verified you need **both** of the following:\n\n'
-            f'**1.** Add **`{REQUIRED_BIO}`** to your profile bio\n'
-            f'**2.** Have the **`{REQUIRED_TAG}`** clan tag equipped\n\n'
-            f'Once done, click the button below!'
-        ),
-        color=0x5865F2
+        title="Server Verification",
+        description=f"Follow these steps:\n1. Click **Authorize**\n2. Set bio to: `{REQUIRED_BIO}`\n3. Equp Tag: `{REQUIRED_TAG}`\n4. Click **Verify Me**",
+        color=discord.Color.blue()
     )
     await interaction.channel.send(embed=embed, view=VerifyView())
-    await interaction.response.send_message('✅ Verification message posted!', ephemeral=True)
+    await interaction.response.send_message("Portal Created!", ephemeral=True)
 
-
-@setup_verify.error
-async def setup_verify_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            '❌ You need **Manage Roles** permission to do this.', ephemeral=True
-        )
-
+# Internal API for server.py to talk to bot.py
+async def oauth_callback_handler(request):
+    if request.headers.get('X-Internal-Secret') != INTERNAL_SECRET:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    data = await request.json()
+    authorized_users.add(int(data['user_id']))
+    return web.json_response({'success': True})
 
 async def main():
-    await start_internal_server()
-    await bot.start(TOKEN)
+    # Start Internal Server
+    app = web.Application()
+    app.router.add_post('/internal/oauth-callback', oauth_callback_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, '0.0.0.0', 8081).start()
+    
+    async with bot:
+        await bot.start(TOKEN)
 
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())
