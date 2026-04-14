@@ -37,10 +37,8 @@ class VerifyView(discord.ui.View):
             cached_member = interaction.guild.get_member(interaction.user.id) or interaction.user
             api_member = await interaction.guild.fetch_member(interaction.user.id)
             
-            # Use the bot's evaluation function
             bio_ok, tag_ok = await interaction.client.evaluate_requirements(cached_member, api_member)
 
-            # Final Action
             if bio_ok and tag_ok:
                 role = interaction.guild.get_role(ROLE_ID)
                 if role:
@@ -48,11 +46,9 @@ class VerifyView(discord.ui.View):
                     authorized_users.discard(interaction.user.id)
                     await interaction.followup.send("✅ Verified! Welcome to the server.", ephemeral=True)
                     
-                    # Logging
                     log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
                     if log_channel:
-                        current_time = int(time.time())
-                        await log_channel.send(f"✅ Role assigned to {api_member.mention} at <t:{current_time}:t>")
+                        await log_channel.send(f"✅ Role assigned to {api_member.mention} at <t:{int(time.time())}:t>")
                 else:
                     await interaction.followup.send("⚠️ Role ID not found.", ephemeral=True)
             else:
@@ -62,7 +58,6 @@ class VerifyView(discord.ui.View):
                     f"{'✅' if tag_ok else '❌'} Clan Tag matches `{REQUIRED_TAG}`", 
                     ephemeral=True
                 )
-
         except Exception as e:
             await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
 
@@ -76,48 +71,35 @@ class MyBot(commands.Bot):
         self.add_view(VerifyView())
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
         print("✅ Bot is online and synced.")
-        
-        # Start the background sweep automatically upon boot
         self.loop.create_task(self.startup_maintenance_sweep())
 
-    # --- THE STARTUP SWEEP ---
     async def startup_maintenance_sweep(self):
         await self.wait_until_ready()
-        print("🧹 Starting initial maintenance sweep for existing users...")
+        print("⏳ Waiting 60 seconds for Discord cache to fully load before sweeping...")
+        await asyncio.sleep(60) # Safety net to prevent false kicks on reboot
         
         guild = self.get_guild(GUILD_ID)
-        if not guild:
-            print("⚠️ Sweep failed: Guild not found.")
-            return
-
+        if not guild: return
         role = guild.get_role(ROLE_ID)
-        if not role:
-            print("⚠️ Sweep failed: Role not found.")
-            return
+        if not role: return
 
-        # Iterate through everyone who currently holds the role
         for member in role.members:
             if not member.bot and member.status not in [discord.Status.offline, discord.Status.invisible]:
                 await self.check_maintenance(member)
-                # 🛡️ 2-SECOND DELAY: Prevents Discord from rate-limiting the bot during a massive scan
                 await asyncio.sleep(2)
-                
         print("✅ Initial maintenance sweep complete!")
 
-    # --- HELPER FUNCTION: Centralized logic for checking a user ---
     async def evaluate_requirements(self, cached_member, api_member=None):
         api_member = api_member or cached_member
 
-        # 1. Check Bio
         bio_ok = False
         for act in cached_member.activities:
-            act_name = str(getattr(act, 'name', '')).lower()
-            act_state = str(getattr(act, 'state', '')).lower()
-            if REQUIRED_BIO.lower() in act_name or REQUIRED_BIO.lower() in act_state:
+            # Combine both fields to be 100% sure we don't miss it
+            text = f"{getattr(act, 'name', '')} {getattr(act, 'state', '')}".lower()
+            if REQUIRED_BIO.lower() in text:
                 bio_ok = True
                 break
 
-        # 2. Check Tag
         tag_ok = False
         clan = getattr(api_member, 'clan', None)
         if clan and hasattr(clan, 'tag') and str(clan.tag).upper() == REQUIRED_TAG.upper():
@@ -125,28 +107,28 @@ class MyBot(commands.Bot):
         elif f"[{REQUIRED_TAG.upper()}]" in api_member.display_name.upper():
             tag_ok = True
 
-        # API Bypass for tag
         if not tag_ok and bio_ok:
             try:
                 route = discord.http.Route('GET', f'/guilds/{cached_member.guild.id}/members/{cached_member.id}')
                 raw_data = await self.http.request(route)
                 if "'tag':" in str(raw_data).lower() and REQUIRED_TAG.lower() in str(raw_data).lower():
                     tag_ok = True
+            except discord.HTTPException as e:
+                # If Discord is lagging or rate-limiting us, give the user the benefit of the doubt
+                if e.status == 429 or e.status >= 500:
+                    tag_ok = True
             except Exception:
                 pass
 
         return bio_ok, tag_ok
 
-    # --- THE MAINTENANCE SYSTEM ---
     async def check_maintenance(self, member):
         if member.bot or member.guild.id != GUILD_ID:
             return
 
-        # Offline / Invisible protection
         if member.status in [discord.Status.offline, discord.Status.invisible]:
             return
 
-        # Instant Lock
         if member.id in self.maintenance_locks:
             return
         self.maintenance_locks.add(member.id)
@@ -160,39 +142,51 @@ class MyBot(commands.Bot):
             bio_ok, tag_ok = await self.evaluate_requirements(member)
 
             if not bio_ok or not tag_ok:
-                # The Grace Period
-                await asyncio.sleep(5)
-                
-                refreshed_member = member.guild.get_member(member.id)
-                
-                if not refreshed_member or refreshed_member.status in [discord.Status.offline, discord.Status.invisible]:
-                    return 
+                # 🛡️ THE 15-SECOND POLLING BUFFER 🛡️
+                # Checks their cache every 3 seconds. If it flickers back, cancel the kick!
+                for _ in range(5):
+                    await asyncio.sleep(3)
+                    refreshed = member.guild.get_member(member.id)
+                    
+                    if not refreshed or refreshed.status in [discord.Status.offline, discord.Status.invisible]:
+                        return # They went offline during the check, leave them alone.
 
-                # Check #2 (The Final Decision)
-                bio_ok_2, tag_ok_2 = await self.evaluate_requirements(refreshed_member)
+                    # Fast check of local cache
+                    b_ok = False
+                    for act in refreshed.activities:
+                        text = f"{getattr(act, 'name', '')} {getattr(act, 'state', '')}".lower()
+                        if REQUIRED_BIO.lower() in text:
+                            b_ok = True
+                            break
+                    
+                    # If they were just missing the bio, and it came back, cancel!
+                    if b_ok and tag_ok:
+                        return 
 
-                if not bio_ok_2 or not tag_ok_2:
-                    await refreshed_member.remove_roles(role)
-                    reason = "Custom Status" if not bio_ok_2 else "Clan Tag"
+                # If they survived the 15 seconds and STILL fail, do one final definitive check
+                final_member = member.guild.get_member(member.id)
+                final_bio, final_tag = await self.evaluate_requirements(final_member)
+
+                if not final_bio or not final_tag:
+                    await final_member.remove_roles(role)
+                    reason = "Custom Status" if not final_bio else "Clan Tag"
                     
                     embed = discord.Embed(
                         title="Verification Removed",
-                        description=f"Your verified role in **{refreshed_member.guild.name}** has been automatically removed.",
+                        description=f"Your verified role in **{final_member.guild.name}** has been automatically removed.",
                         color=0xED4245
                     )
                     embed.add_field(name="Reason", value=f"You removed the required `{reason}`.", inline=False)
                     embed.add_field(name="How to fix", value="Add it back and click **Verify Me**.\n- Regain the role at <#1493301591036661770>", inline=False)
                     
                     try:
-                        await refreshed_member.send(embed=embed)
+                        await final_member.send(embed=embed)
                     except discord.Forbidden:
-                        print(f"⚠️ Could not DM {refreshed_member.name}.")
+                        pass
 
-                    # Logging
-                    log_channel = refreshed_member.guild.get_channel(LOG_CHANNEL_ID)
+                    log_channel = final_member.guild.get_channel(LOG_CHANNEL_ID)
                     if log_channel:
-                        current_time = int(time.time())
-                        await log_channel.send(f"❌ Role removed from {refreshed_member.mention} at <t:{current_time}:t> (Reason: Missing {reason})")
+                        await log_channel.send(f"❌ Role removed from {final_member.mention} at <t:{int(time.time())}:t> (Reason: Missing {reason})")
 
         except Exception as e:
             print(f"Maintenance Error: {e}")
